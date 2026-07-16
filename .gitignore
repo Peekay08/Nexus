@@ -1,0 +1,15 @@
+# Binary executables
+*.exe
+*.o
+*.nxs
+
+# Build and local configurations
+.cache/
+.vscode/
+compile_commands.json
+
+# Demo/Temporary output files
+demo.txt
+broken.cpp
+builtin_test.cpp
+test.cpp
