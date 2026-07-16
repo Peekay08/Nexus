@@ -1,101 +1,97 @@
-#include "vm.hpp"
-#include "builtins.hpp"
-#include "compiler/diagnostics.hpp"
+#ifndef DEBUG_HPP
+#define DEBUG_HPP
+
+#include "../../compiler/lexer/lexer.hpp"
+#include "../../compiler/parser/parser.hpp"
+#include "../../compiler/ir/ir.hpp"
+#include "../../compiler/ir/ir_loader.hpp"
+#include "../../runtime/interpreter/vm.hpp"
+#include "../../runtime/interpreter/frame.hpp"
+#include "../../runtime/interpreter/builtins.hpp"
+#include "compiler/optimizer/optimizer.hpp"
 #include <iostream>
-#include <stdexcept>
-#include <cmath>
+#include <fstream>
+#include <sstream>
+#include <string>
+#include <vector>
+#include <map>
 
-VM::VM(const IRProgram& program, const std::string& sourceName) : program(program), sourceName(sourceName) {
-    for (const auto& func : program.functions) {
-        functionTable[func.name] = func;
-    }
-}
-
-VM::~VM() {
-    for (auto const& [handle, f] : fileHandles) {
-        if (f) {
-            std::fclose(f);
-        }
-    }
-}
-
-bool VM::isTrue(const Value& val) {
-    if (std::holds_alternative<int>(val)) {
-        return std::get<int>(val) != 0;
-    } else if (std::holds_alternative<float>(val)) {
-        return std::get<float>(val) != 0.0f;
-    } else {
-        return !std::get<std::string>(val).empty();
-    }
-}
-
-void VM::setupLabels(IRFunction& func, StackFrame& frame) {
-    for (size_t i = 0; i < func.instructions.size(); ++i) {
-        if (func.instructions[i].op == IROp::LABEL) {
-            frame.labels[func.instructions[i].dest] = static_cast<int>(i);
-        }
-    }
-}
-
-Value VM::execute(const std::string& entryFunction, const std::vector<Value>& args, bool traceMode) {
-    auto it = functionTable.find(entryFunction);
-    if (it == functionTable.end()) {
-        throw VMException(formatRuntimeDiagnostic("NX-404", "Entry function '" + entryFunction + "' not found.", sourceName, "unknown", 0));
-    }
-
-    IRFunction currentFunc = it->second;
-    StackFrame entryFrame;
-    entryFrame.funcName = entryFunction;
-    entryFrame.ip = 0;
-    setupLabels(currentFunc, entryFrame);
-
-    // Map entry function parameters to values
-    for (size_t i = 0; i < currentFunc.paramNames.size() && i < args.size(); ++i) {
-        std::string regName = "%" + currentFunc.paramNames[i];
-        entryFrame.registers[regName] = args[i];
-    }
-
-    callStack.clear();
-    callStack.push_back(entryFrame);
+class DebugVM {
+public:
+    IRProgram program;
+    std::string sourceName;
+    std::map<std::string, IRFunction> functionTable;
+    std::vector<StackFrame> callStack;
+    std::map<int, FILE*> fileHandles;
+    int nextFileHandle = 1;
     Value lastReturnValue = 0;
 
-    while (!callStack.empty()) {
+    DebugVM(const IRProgram& program, const std::string& sourceName) : program(program), sourceName(sourceName) {
+        for (const auto& func : program.functions) {
+            functionTable[func.name] = func;
+        }
+    }
+
+    ~DebugVM() {
+        for (auto const& [handle, f] : fileHandles) {
+            if (f) std::fclose(f);
+        }
+    }
+
+    bool isTrue(const Value& val) {
+        if (std::holds_alternative<int>(val)) {
+            return std::get<int>(val) != 0;
+        } else if (std::holds_alternative<float>(val)) {
+            return std::get<float>(val) != 0.0f;
+        } else {
+            return !std::get<std::string>(val).empty();
+        }
+    }
+
+    void setupLabels(IRFunction& func, StackFrame& frame) {
+        for (size_t i = 0; i < func.instructions.size(); ++i) {
+            if (func.instructions[i].op == IROp::LABEL) {
+                frame.labels[func.instructions[i].dest] = static_cast<int>(i);
+            }
+        }
+    }
+
+    void init(const std::string& entryFunction) {
+        auto it = functionTable.find(entryFunction);
+        if (it == functionTable.end()) {
+            throw std::runtime_error("Entry function '" + entryFunction + "' not found.");
+        }
+        IRFunction currentFunc = it->second;
+        StackFrame entryFrame;
+        entryFrame.funcName = entryFunction;
+        entryFrame.ip = 0;
+        setupLabels(currentFunc, entryFrame);
+        callStack.push_back(entryFrame);
+    }
+
+    bool stepOneInstruction(bool verbose = true) {
+        if (callStack.empty()) return false;
+
         StackFrame& frame = callStack.back();
         IRFunction& func = functionTable[frame.funcName];
 
         if (frame.ip >= static_cast<int>(func.instructions.size())) {
-            // Function completed without return instruction
             callStack.pop_back();
-            continue;
+            if (verbose) std::cout << "[debug] Completed function " << frame.funcName << "\n";
+            return !callStack.empty();
         }
 
         const IRInstruction& inst = func.instructions[frame.ip];
         int currentIp = frame.ip;
-        frame.ip++; // advance
+        frame.ip++;
 
-        // Print tracing details BEFORE instruction execution
-        if (traceMode) {
-            std::cout << "[nxs-trace] Instruction " << currentIp << ": " << inst.toString() << "\n";
-            if (!inst.arg1.empty() && inst.arg1[0] == '%') {
-                try {
-                    std::cout << "  " << inst.arg1 << " = " << valueToString(resolveValue(inst.arg1, frame, currentIp, sourceName)) << "\n";
-                } catch (...) {}
-            }
-            if (!inst.arg2.empty() && inst.arg2[0] == '%') {
-                try {
-                    std::cout << "  " << inst.arg2 << " = " << valueToString(resolveValue(inst.arg2, frame, currentIp, sourceName)) << "\n";
-                } catch (...) {}
-            }
-            if (!inst.dest.empty() && inst.dest[0] == '%' && inst.op == IROp::STORE) {
-                try {
-                    std::cout << "  " << inst.dest << " = " << valueToString(resolveValue(inst.dest, frame, currentIp, sourceName)) << "\n";
-                } catch (...) {}
-            }
+        if (verbose) {
+            std::cout << "[debug-step] " << frame.funcName << ":" << currentIp << " -> " << inst.toString() << "\n";
         }
 
         switch (inst.op) {
             case IROp::ALLOCA: {
-                frame.variables[inst.dest] = 0; // initialize
+                frame.variables[inst.dest] = 0;
                 break;
             }
             case IROp::STORE: {
@@ -198,14 +194,14 @@ Value VM::execute(const std::string& entryFunction, const std::vector<Value>& ar
                     float l = std::holds_alternative<float>(lhs) ? std::get<float>(lhs) : static_cast<float>(std::get<int>(lhs));
                     float r = std::holds_alternative<float>(rhs) ? std::get<float>(rhs) : static_cast<float>(std::get<int>(rhs));
                     if (r == 0.0f) {
-                        throw VMException(formatRuntimeDiagnostic("NX-401", "Division by zero (float)", sourceName, frame.funcName, currentIp));
+                        throw std::runtime_error("Division by zero (float)");
                     }
                     frame.registers[inst.dest] = l / r;
                 } else {
                     int l = std::get<int>(lhs);
                     int r = std::get<int>(rhs);
                     if (r == 0) {
-                        throw VMException(formatRuntimeDiagnostic("NX-401", "Division by zero (integer)", sourceName, frame.funcName, currentIp));
+                        throw std::runtime_error("Division by zero (integer)");
                     }
                     frame.registers[inst.dest] = l / r;
                 }
@@ -217,11 +213,11 @@ Value VM::execute(const std::string& entryFunction, const std::vector<Value>& ar
                 if (std::holds_alternative<int>(lhs) && std::holds_alternative<int>(rhs)) {
                     int r = std::get<int>(rhs);
                     if (r == 0) {
-                        throw VMException(formatRuntimeDiagnostic("NX-401", "Modulo division by zero (integer)", sourceName, frame.funcName, currentIp));
+                        throw std::runtime_error("Modulo division by zero (integer)");
                     }
                     frame.registers[inst.dest] = std::get<int>(lhs) % r;
                 } else {
-                    throw VMException(formatRuntimeDiagnostic("NX-402", "Modulo operator requires integer operands.", sourceName, frame.funcName, currentIp));
+                    throw std::runtime_error("Modulo operator requires integer operands.");
                 }
                 break;
             }
@@ -233,7 +229,7 @@ Value VM::execute(const std::string& entryFunction, const std::vector<Value>& ar
                 if (itL != frame.labels.end()) {
                     frame.ip = itL->second;
                 } else {
-                    throw VMException(formatRuntimeDiagnostic("NX-403", "Branch target label '" + inst.dest + "' not found.", sourceName, frame.funcName, currentIp));
+                    throw std::runtime_error("Branch target label '" + inst.dest + "' not found.");
                 }
                 break;
             }
@@ -244,7 +240,7 @@ Value VM::execute(const std::string& entryFunction, const std::vector<Value>& ar
                 if (itL != frame.labels.end()) {
                     frame.ip = itL->second;
                 } else {
-                    throw VMException(formatRuntimeDiagnostic("NX-403", "Branch target label '" + targetLabel + "' not found.", sourceName, frame.funcName, currentIp));
+                    throw std::runtime_error("Branch target label '" + targetLabel + "' not found.");
                 }
                 break;
             }
@@ -252,7 +248,6 @@ Value VM::execute(const std::string& entryFunction, const std::vector<Value>& ar
                 std::string calleeName = inst.arg1;
                 Value builtinResult = 0;
                 
-                // Try executing as a Standard Library built-in first
                 if (executeBuiltin(calleeName, inst.callArgs, frame, currentIp, sourceName, fileHandles, nextFileHandle, builtinResult)) {
                     if (!inst.dest.empty()) {
                         frame.registers[inst.dest] = builtinResult;
@@ -262,7 +257,7 @@ Value VM::execute(const std::string& entryFunction, const std::vector<Value>& ar
  
                 auto itC = functionTable.find(calleeName);
                 if (itC == functionTable.end()) {
-                    throw VMException(formatRuntimeDiagnostic("NX-404", "Callee function '" + calleeName + "' not found.", sourceName, frame.funcName, currentIp));
+                    throw std::runtime_error("Callee function '" + calleeName + "' not found.");
                 }
  
                 IRFunction calleeFunc = itC->second;
@@ -271,19 +266,15 @@ Value VM::execute(const std::string& entryFunction, const std::vector<Value>& ar
                 calleeFrame.ip = 0;
                 setupLabels(calleeFunc, calleeFrame);
  
-                // Map arguments
                 for (size_t i = 0; i < calleeFunc.paramNames.size() && i < inst.callArgs.size(); ++i) {
                     Value val = resolveValue(inst.callArgs[i], frame, currentIp, sourceName);
                     std::string regName = "%" + calleeFunc.paramNames[i];
                     calleeFrame.registers[regName] = val;
                 }
  
-                // Check call stack limit (recursion limit)
                 if (callStack.size() >= 1000) {
-                    throw VMException(formatRuntimeDiagnostic("NX-407", "Stack overflow: call stack limit (1000 frames) exceeded", sourceName, frame.funcName, currentIp));
+                    throw std::runtime_error("Stack overflow: call stack limit exceeded");
                 }
-
-                // Push onto stack
                 callStack.push_back(calleeFrame);
                 break;
             }
@@ -291,13 +282,11 @@ Value VM::execute(const std::string& entryFunction, const std::vector<Value>& ar
                 Value retVal = resolveValue(inst.dest, frame, currentIp, sourceName);
                 lastReturnValue = retVal;
                 
-                // Pop the current frame
                 if (callStack.empty()) {
-                    throw VMException(formatRuntimeDiagnostic("NX-406", "Stack underflow: ret called on empty call stack", sourceName, "unknown", 0));
+                    throw std::runtime_error("Stack underflow: ret called on empty call stack");
                 }
                 callStack.pop_back();
  
-                // If caller exists, store return value in call instruction destination register
                 if (!callStack.empty()) {
                     StackFrame& callerFrame = callStack.back();
                     IRFunction& callerFunc = functionTable[callerFrame.funcName];
@@ -318,17 +307,122 @@ Value VM::execute(const std::string& entryFunction, const std::vector<Value>& ar
             }
         }
 
-        // Print tracing details AFTER instruction execution
-        if (traceMode) {
-            if (!inst.dest.empty() && inst.dest[0] == '%' && inst.op != IROp::STORE) {
-                try {
-                    std::cout << "  ↓\n";
-                    std::cout << "  " << inst.dest << " = " << valueToString(frame.registers[inst.dest]) << "\n";
-                } catch (...) {}
-            }
-            std::cout << "\n";
+        if (verbose && !inst.dest.empty() && inst.dest[0] == '%' && inst.op != IROp::STORE) {
+            try {
+                std::cout << "  ↓\n";
+                std::cout << "  " << inst.dest << " = " << valueToString(frame.registers[inst.dest]) << "\n";
+            } catch (...) {}
         }
+
+        return !callStack.empty();
     }
- 
-    return lastReturnValue;
+};
+
+inline bool runDebugCommand(const std::string& filePath) {
+    std::string source;
+    bool isPrecompiledIR = false;
+
+    if (filePath.length() > 4 && filePath.substr(filePath.length() - 4) == ".nxs") {
+        isPrecompiledIR = true;
+    }
+
+    std::ifstream file(filePath);
+    if (!file.is_open()) {
+        std::cerr << "Error: Could not open file '" << filePath << "'\n";
+        return false;
+    }
+
+    std::stringstream ss;
+    ss << file.rdbuf();
+    source = ss.str();
+    file.close();
+
+    try {
+        IRProgram irProg;
+
+        if (isPrecompiledIR) {
+            irProg = IRLoader::loadFromFile(filePath);
+        } else {
+            Lexer lexer(source, filePath);
+            std::vector<Token> tokens = lexer.tokenize();
+
+            for (const auto& token : tokens) {
+                if (token.type == TokenType::TOK_ERROR) {
+                    std::cerr << token.value << "\n";
+                    return false;
+                }
+            }
+
+            Parser parser(tokens, filePath);
+            std::unique_ptr<ProgramNode> ast = parser.parse();
+
+            IRGenerator irGen;
+            irProg = irGen.generate(*ast);
+
+            IROptimizer optimizer;
+            optimizer.optimize(irProg);
+        }
+
+        std::cout << "=========================================================\n";
+        std::cout << " 🛠️ NEXUS Interactive Step Debugger\n";
+        std::cout << "=========================================================\n";
+        std::cout << "Commands:\n";
+        std::cout << "  step (s)      - Step one instruction (or press Enter)\n";
+        std::cout << "  regs (r)      - Print active registers in current frame\n";
+        std::cout << "  vars (v)      - Print variables in current frame\n";
+        std::cout << "  stack (st)    - Print call stack trace\n";
+        std::cout << "  continue (c)  - Run program to completion\n";
+        std::cout << "  quit (q)      - Quit debugger\n\n";
+
+        DebugVM dbg(irProg, filePath);
+        dbg.init("main");
+
+        std::string cmd;
+        bool running = true;
+        while (running && !dbg.callStack.empty()) {
+            std::cout << "nxs-dbg> ";
+            if (!std::getline(std::cin, cmd)) break;
+            
+            if (cmd == "step" || cmd == "s" || cmd.empty()) {
+                running = dbg.stepOneInstruction(true);
+            } else if (cmd == "regs" || cmd == "r") {
+                const auto& frame = dbg.callStack.back();
+                std::cout << "Registers in " << frame.funcName << ":\n";
+                if (frame.registers.empty()) std::cout << "  (none)\n";
+                for (const auto& [name, val] : frame.registers) {
+                    std::cout << "  " << name << " = " << valueToString(val) << "\n";
+                }
+            } else if (cmd == "vars" || cmd == "v") {
+                const auto& frame = dbg.callStack.back();
+                std::cout << "Variables in " << frame.funcName << ":\n";
+                if (frame.variables.empty()) std::cout << "  (none)\n";
+                for (const auto& [name, val] : frame.variables) {
+                    std::cout << "  " << name << " = " << valueToString(val) << "\n";
+                }
+            } else if (cmd == "stack" || cmd == "st") {
+                std::cout << "Call Stack Trace:\n";
+                for (int i = static_cast<int>(dbg.callStack.size()) - 1; i >= 0; --i) {
+                    std::cout << "  [" << i << "] " << dbg.callStack[i].funcName << " (ip: " << dbg.callStack[i].ip << ")\n";
+                }
+            } else if (cmd == "continue" || cmd == "c") {
+                std::cout << "[debug] Running to completion...\n";
+                while (dbg.stepOneInstruction(false)) {}
+                running = false;
+            } else if (cmd == "quit" || cmd == "q") {
+                std::cout << "[debug] Quitting debugger.\n";
+                break;
+            } else {
+                std::cout << "Unknown command. Try: step (s), regs (r), vars (v), stack (st), continue (c), quit (q).\n";
+            }
+        }
+
+        std::cout << "[debug] Execution finished. Result: " << valueToString(dbg.lastReturnValue) << "\n";
+        return true;
+
+    } catch (const std::exception& e) {
+        std::cerr << "[debug] Debugging session failed: " << e.what() << "\n";
+        return false;
+    }
 }
+
+#endif // DEBUG_HPP

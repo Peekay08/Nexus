@@ -1,6 +1,11 @@
 #include "commands/help.hpp"
 #include "commands/build.hpp"
 #include "commands/run.hpp"
+#include "commands/doctor.hpp"
+#include "commands/dump_ir.hpp"
+#include "commands/stats.hpp"
+#include "commands/trace.hpp"
+#include "commands/debug.hpp"
 #include <iostream>
 #include <string>
 
@@ -20,6 +25,55 @@ int main(int argc, char* argv[]) {
     if (command == "version" || command == "--version" || command == "-v") {
         std::cout << "NEXUS Compiler Version 1.0.0\n";
         return 0;
+    }
+
+    if (command == "doctor") {
+        bool success = runDoctorCommand();
+        return success ? 0 : 1;
+    }
+
+    if (command == "dump-ir") {
+        if (argc < 3) {
+            std::cerr << "Error: 'dump-ir' command requires a file path.\n";
+            std::cerr << "Usage: nxs dump-ir <file.cpp>\n";
+            return 1;
+        }
+        std::string filePath = argv[2];
+        bool success = runDumpIRCommand(filePath);
+        return success ? 0 : 1;
+    }
+
+    if (command == "stats") {
+        if (argc < 3) {
+            std::cerr << "Error: 'stats' command requires a file path.\n";
+            std::cerr << "Usage: nxs stats <file.cpp>\n";
+            return 1;
+        }
+        std::string filePath = argv[2];
+        bool success = runStatsCommand(filePath);
+        return success ? 0 : 1;
+    }
+
+    if (command == "trace") {
+        if (argc < 3) {
+            std::cerr << "Error: 'trace' command requires a file path.\n";
+            std::cerr << "Usage: nxs trace <file.cpp|file.nxs>\n";
+            return 1;
+        }
+        std::string filePath = argv[2];
+        bool success = runTraceCommand(filePath);
+        return success ? 0 : 1;
+    }
+
+    if (command == "debug") {
+        if (argc < 3) {
+            std::cerr << "Error: 'debug' command requires a file path.\n";
+            std::cerr << "Usage: nxs debug <file.cpp|file.nxs>\n";
+            return 1;
+        }
+        std::string filePath = argv[2];
+        bool success = runDebugCommand(filePath);
+        return success ? 0 : 1;
     }
 
     if (command == "target") {

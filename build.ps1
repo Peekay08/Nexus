@@ -17,6 +17,7 @@ $sources = @(
     "compiler/ir/ir.cpp",
     "compiler/ir/ir_loader.cpp",
     "compiler/optimizer/optimizer.cpp",
+    "runtime/interpreter/builtins.cpp",
     "runtime/interpreter/vm.cpp"
 )
 
